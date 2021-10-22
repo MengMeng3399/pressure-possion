@@ -1,6 +1,6 @@
 
-
 import taichi as ti
+# ti.init(arch=ti.cpu, debug=True,excepthook=True)
 ti.init(arch=ti.gpu)
 
 dim = 2
@@ -35,25 +35,37 @@ Voxelized=ti.field(dtype=int, shape=(n_grid, n_grid))
 
 
 @ti.func
-def is_valid(i, j):
-    return i >= 0 and i < n_grid and j >= 0 and j < n_grid
+def is_validx(i, j):
+    return i >= 0 and i < n_grid+1 and j >= 0 and j < n_grid
 
 
 @ti.func
-def is_solid(i, j):
-    return is_valid(i, j) and Voxelized[i, j] == -2
+def is_solidx(i, j):
+    return is_validx(i, j) and Voxelized[i, j] == -2
 
+
+@ti.func
+def is_validy(i, j):
+    return i >= 0 and i < n_grid and j >= 0 and j < n_grid+1
+
+
+@ti.func
+def is_solidy(i, j):
+    return is_validy(i, j) and Voxelized[i, j] == -2
 
 @ti.kernel
 def enforce_boundary():
-
     for i, j in grid_u:
-        if is_solid(i - 1, j) or is_solid(i, j):
-            grid_u[i, j] = 0.0
+        # print(i,j)
+        if i-1>=0 and i<n_grid:
+            if is_solidx(i - 1, j) or is_solidx(i, j):
+                grid_u[i, j] = 0.0
 
     for i, j in grid_v:
-        if is_solid(i, j - 1) or is_solid(i, j):
-            grid_v[i, j] = 0.0
+        if j-1>=0 and j<n_grid:
+            if is_solidy(i, j - 1) or is_solidy(i, j):
+                grid_v[i, j] = 0.0
+
 
 
 @ti.func
@@ -72,9 +84,7 @@ def confine_position_to_boundary(p):
 def init_state():
     for i in range(n_particles):
         #粒子的初始位置范围（0.2-0.8），速度设为0.0
-        x[i] = [ti.random() * 0.6 + 0.2, ti.random() * 0.6 + 0.2]
-
-
+        x[i] = [ti.random() * 0.6 + 0.2, ti.random() * 0.6+0.2 ]
 
 def clear_grid():
     for s in range(10):
@@ -87,6 +97,7 @@ def clear_grid():
 def ParticlesToGrid():
     #分别转化 U,V。先尝试用Quadratic B-spline进行插值
     for p in x:
+        # print(v[p][0])
         base_u = (x[p] * inv_dx -ti.Vector([0.0,0.5]) ).cast(int)
         base_v=(x[p] * inv_dx -ti.Vector([0.5,0.0]) ).cast(int)
         fx_u = x[p] * inv_dx - base_u.cast(float)
@@ -94,15 +105,14 @@ def ParticlesToGrid():
         # Quadratic B-spline
         w_u = [0.5 * (1.5 - fx_u) ** 2, 0.75 - (fx_u - 1) ** 2, 0.5 * (fx_u - 0.5) ** 2]
         w_v = [0.5 * (1.5 - fx_v) ** 2, 0.75 - (fx_v - 1) ** 2, 0.5 * (fx_v - 0.5) ** 2]
-        # 分别处理 U，V
+    #     # 分别处理 U，V
         for i in ti.static(range(3)):
             for j in ti.static(range(3)):
                 weight_u = w_u[i][0] * w_u[j][1]
                 weight_v = w_v[i][0] * w_v[j][1]
-
                 index_u = base_u + ti.Vector([i, j])
                 index_v = base_v + ti.Vector([i, j])
-                if index_u[0] <= n_grid and index_u[1] <= n_grid - 1:
+                if index_u[0] <= n_grid and  index_u[1] <= n_grid - 1:
                     grid_u[index_u] += weight_u * v[p][0]
                     grid_m_u[index_u] += weight_u
 
@@ -133,20 +143,22 @@ def GridOp2():
     scale=dt/(rh0*dx)
 
     for i,j in ti.ndrange(n_grid, n_grid):
-        if (Voxelized[i-1,j]==1 or Voxelized[i,j]==1):
-            if Voxelized[i-1,j]==-2 or Voxelized[i,j]==-2:
-                grid_u[i,j]=0
-            else:
-                grid_u[i,j]-=scale*(p[i,j]-p[i-1,j])*0.90
-                # print(scale)
-                # print(i,j,p[i,j],grid_u[i,j])
+        if i-1>=0:
+            if (Voxelized[i - 1, j] == 1 or Voxelized[i, j] == 1):
+                if Voxelized[i - 1, j] == -2 or Voxelized[i, j] == -2:
+                    grid_u[i, j] = 0
+                else:
+                    grid_u[i, j] -= scale * (p[i, j] - p[i - 1, j])
+                    # print(scale)
+                    # print(i,j,p[i,j],grid_u[i,j])
 
+        if j - 1 >=0:
+            if (Voxelized[i, j - 1] == 1 or Voxelized[i, j] == 1):
+                if Voxelized[i, j - 1] == -2 or Voxelized[i, j] == -2:
+                    grid_v[i, j] = 0
+                else:
+                    grid_v[i, j] -= scale * (p[i, j] - p[i, j - 1])
 
-        if (Voxelized[i, j-1] == 1 or Voxelized[i, j] == 1) :
-            if Voxelized[i , j-1] == -2 or Voxelized[i, j] == -2:
-                grid_v[i, j] = 0
-            else:
-                grid_v[i, j] -= scale * (p[i, j] - p[i , j-1])*0.90
 
 
 @ti.kernel
@@ -180,16 +192,17 @@ def GridToParticles():
 
 @ti.kernel
 def init_vox():
+    bound = 1
     for i,j in Voxelized:
-        bound=1
-        if (n_grid-1)-bound>=i>=bound and (n_grid-1)-bound>=j>=bound:
+        if (n_grid-1)-bound>= i >=bound and (n_grid-1)-bound>= j >=bound:
             Voxelized[i,j] = -1
         else:
             Voxelized[i, j] = -2
-
+    #
     for k in x:
         cell=(x[k]*inv_dx).cast(int)
-        Voxelized[cell] = 1
+        if (n_grid-1)-bound>= cell[0] >=bound and (n_grid-1)-bound>= cell[1]  >=bound:
+            Voxelized[cell] = 1
 
 
 @ti.data_oriented
@@ -202,15 +215,11 @@ class CGSolver:
         self.v = v
         self.cell_type = cell_type
         # 右侧的线性系统：
-
         self.b = ti.field(dtype=ti.f32, shape=(self.m, self.n))
-
-
         # 左侧的线性系统
         self.Adiag = ti.field(dtype=ti.f32, shape=(self.m, self.n))
         self.Ax = ti.field(dtype=ti.f32, shape=(self.m, self.n))
         self.Ay = ti.field(dtype=ti.f32, shape=(self.m, self.n))
-
         # cg需要的参数
         #p:x
         self.p = ti.field(dtype=ti.f32, shape=(self.m, self.n))
@@ -227,18 +236,17 @@ class CGSolver:
         #beta：
         self.beta = ti.field(dtype=ti.f32, shape=())
 
+
     @ti.kernel
     def system_init_kernel(self, scale_A: ti.f32, scale_b: ti.f32):
         # 右边线性系统
         for i, j in ti.ndrange(self.m, self.n):
-
             if self.cell_type[i, j] ==1:
                 self.b[i,j] = -1 * scale_b * (self.u[i + 1, j] - self.u[i, j] +
                                               self.v[i, j + 1] - self.v[i, j])
 
-
         for i, j in ti.ndrange(self.m, self.n):
-            if self.cell_type[i, j] == 1:
+            if self.cell_type[i, j] == 1 and i-1>=0 and j-1>=0 and i+1<=self.m-1 and j+1<=self.n-1:
                 if self.cell_type[i - 1, j] == -2:
                     self.b[i, j] -= scale_b * (self.u[i, j] - 0)
                 if self.cell_type[i + 1, j] == -2:
@@ -251,7 +259,7 @@ class CGSolver:
         #左侧线性系统：
         for i, j in ti.ndrange(self.m, self.n):
             #因为对称，在这里只关心 右 ，上 方向
-            if self.cell_type[i, j] ==1:
+            if self.cell_type[i, j] ==1 and i-1>=0 and j-1>=0 and i+1<=self.m-1 and j+1<=self.n-1 :
                 if self.cell_type[i - 1, j] == 1:
                     self.Adiag[i, j] += scale_A
                 if self.cell_type[i + 1, j] == 1:
@@ -259,8 +267,6 @@ class CGSolver:
                     self.Ax[i, j] = -scale_A
                 elif self.cell_type[i + 1, j] == -1:
                     self.Adiag[i, j] += scale_A
-
-
                 if self.cell_type[i, j - 1] == 1:
                     self.Adiag[i, j] += scale_A
                 if self.cell_type[i, j + 1] == 1:
@@ -276,7 +282,7 @@ class CGSolver:
         self.Ax.fill(0.0)
         self.Ay.fill(0.0)
         self.system_init_kernel(scale_A, scale_b)
-
+        #
     def solve(self, max_iters):
 
         tol =1e-6
@@ -290,7 +296,6 @@ class CGSolver:
         init_rTr = self.sum[None]
 
         # print("init rTr = {}".format(init_rTr))
-
         if init_rTr < tol:
 
             print("Converged: init rtr = {}".format(init_rTr))
@@ -309,33 +314,24 @@ class CGSolver:
                 self.reduce(self.s, self.As)
                 sAs = self.sum[None]
                 if sAs==0:
-                    # self.update_p()
-                    # print("zhixing")
                     break
-
                 self.alpha[None] = old_rTr / sAs
                 # p = p + alpha * s
                 self.update_p()
-
                 # r = r - alpha * As
                 self.update_r()
 
                 # 检查收敛性
                 self.reduce(self.r, self.r)
-
                 rTr = self.sum[None]
-
                 if rTr < init_rTr * tol:
                     break
                 new_rTr = rTr
                 self.beta[None] = new_rTr / old_rTr
-
                 # s = r + beta * s
                 self.update_s()
                 old_rTr = new_rTr
                 i+=1
-
-
 
     @ti.kernel
     def reduce(self, p: ti.template(), q: ti.template()):
@@ -344,16 +340,14 @@ class CGSolver:
             if self.cell_type[i, j] == 1:
                 self.sum[None] += p[i, j] * q[i, j]
 
-
     @ti.kernel
     def compute_As(self):
         for i, j in ti.ndrange(self.m, self.n):
-            if self.cell_type[i, j] == 1:
+            if self.cell_type[i, j] == 1 and i-1>=0 and j-1>=0 and i+1<=self.m-1 and j+1<=self.n-1:
                 self.As[i, j] = self.Adiag[i, j] * self.s[i, j] + self.Ax[
                     i - 1, j] * self.s[i - 1, j] + self.Ax[i, j] * self.s[
                                     i + 1, j] + self.Ay[i, j - 1] * self.s[
                                     i, j - 1] + self.Ay[i, j] * self.s[i, j + 1]
-
     @ti.kernel
     def update_p(self):
         for i, j in ti.ndrange(self.m, self.n):
